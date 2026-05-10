@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+langgraph
+pinecone
+sentence-transformers
+rank_bm25
+groq
+google-genai
+python-dotenv
+requests
+rich
+python-dateutil
+pypdf
+python-docx
