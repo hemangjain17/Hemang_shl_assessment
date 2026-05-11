@@ -34,7 +34,8 @@ def evaluate_traces():
         print("Error: FastAPI server must be running at http://localhost:8000")
         return
 
-    trace_files = glob.glob("sample_conversations/GenAI_SampleConversations/*.md")
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    trace_files = glob.glob(os.path.join(current_dir, "sample_conversations", "GenAI_SampleConversations", "*.md"))
     if not trace_files:
         print("No trace files found.")
         return
