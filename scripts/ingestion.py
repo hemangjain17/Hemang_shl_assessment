@@ -5,7 +5,7 @@ import os
 from dateutil import parser
 from supabase import create_client, Client
 from dotenv import load_dotenv
-from llms import embed_text
+from app.llms import embed_text
 
 load_dotenv()
 
@@ -34,7 +34,7 @@ def extract_test_types(keys):
 
 def main():
     print("Loading raw catalog...")
-    with open('shl_product_catalog.json', 'r', encoding='utf-8') as f:
+    with open('data/shl_product_catalog.json', 'r', encoding='utf-8') as f:
         raw_catalog = json.load(f)
         
     print("Deduplicating...")
@@ -104,7 +104,7 @@ def main():
         tokenized_names = [re.split(r"\W+", n) for n in names]
         bm25_names = BM25Okapi(tokenized_names)
         
-        with open('bm25_indices.pkl', 'wb') as f:
+        with open('data/bm25_indices.pkl', 'wb') as f:
             pickle.dump({
                 "bm25_chunks": bm25_chunks,
                 "bm25_names": bm25_names,
@@ -113,7 +113,7 @@ def main():
     except ImportError:
         print("rank_bm25 not installed, skipping local BM25 generation.")
         
-    with open('catalog.json', 'w', encoding='utf-8') as f:
+    with open('data/catalog.json', 'w', encoding='utf-8') as f:
         json.dump(normalized_catalog, f, ensure_ascii=False, indent=2)
 
     print("Generating Embeddings (using Gemini API)...")

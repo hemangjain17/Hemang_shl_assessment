@@ -14,8 +14,8 @@ from typing import TypedDict, List, Dict, Any
 
 from langgraph.graph import StateGraph, END
 from supabase import create_client, Client
-from models import ChatRequest, ChatResponse, ConstraintState, Message, ExtractorResponse, RoleExpansion
-from llms import call_gemini, call_synthesizer, embed_text
+from app.models import ChatRequest, ChatResponse, ConstraintState, Message, ExtractorResponse, RoleExpansion
+from app.llms import call_gemini, call_synthesizer, embed_text
 
 # Global state
 catalog_dict = {}
@@ -82,14 +82,14 @@ async def lifespan(app: FastAPI):
     global catalog_dict, bm25_indices, supabase_client
     
     # Load catalog
-    if os.path.exists("catalog.json"):
-        with open("catalog.json", "r", encoding="utf-8") as f:
+    if os.path.exists("data/catalog.json"):
+        with open("data/catalog.json", "r", encoding="utf-8") as f:
             catalog_dict = json.load(f)
             
     # Load BM25 (fallback)
-    if os.path.exists("bm25_indices.pkl"):
+    if os.path.exists("data/bm25_indices.pkl"):
         try:
-            with open("bm25_indices.pkl", "rb") as f:
+            with open("data/bm25_indices.pkl", "rb") as f:
                 bm25_indices = pickle.load(f)
         except Exception:
             pass

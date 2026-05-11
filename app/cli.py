@@ -39,7 +39,7 @@ def run_ingestion():
     
     try:
         # Import main from ingestion.py
-        from ingestion import main as start_ingest
+        from scripts.ingestion import main as start_ingest
         start_ingest()
         console.print("\n[bold green][DONE] Ingestion pipeline completed successfully![/bold green]")
     except ImportError:
@@ -111,7 +111,7 @@ def chat():
 def serve():
     console.print(Panel("[bold green]Starting FastAPI Server...[/bold green]\nUvicorn will run on http://localhost:8000", border_style="green"))
     try:
-        subprocess.run([sys.executable, "-m", "uvicorn", "agent:app", "--reload", "--host", "0.0.0.0", "--port", "8000"], check=True)
+        subprocess.run([sys.executable, "-m", "uvicorn", "main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"], check=True)
     except FileNotFoundError:
         console.print("[bold red][ERROR] Error: 'uvicorn' not found. Please install requirements: pip install -r requirements.txt[/bold red]")
     except KeyboardInterrupt:
