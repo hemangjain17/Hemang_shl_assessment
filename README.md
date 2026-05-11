@@ -5,38 +5,9 @@ An intelligent, conversational AI assistant designed to recommend the best SHL a
 ## Features
 
 - **Conversational AI Agent**: Implements a LangGraph state machine with specialized nodes for intent classification, state extraction, query generation, and response synthesis.
-- **Hybrid Retrieval System**: Combines dense vector search (`gemini-embedding-2`) and full-text sparse retrieval (PostgreSQL FTS/BM25) to find exact matches for skills, roles, and assessment categories.
+- **Hybrid Retrieval System**: Combines dense vector search and full-text sparse retrieval (PostgreSQL FTS/BM25) to find exact matches for skills, roles, and assessment categories.
 - **Dynamic Constraint Tracking**: Remembers context across multi-turn conversations, accumulating requirements like specific tools (e.g., "Java", "Docker"), job levels, and assessment types (e.g., "cognitive", "personality").
 - **Canonical Product Injection**: Automatically injects standard SHL batteries based on role and seniority context (e.g., automatically including OPQ32r and Verify G+ for senior hires, or GSA for talent audits).
-- **Interactive CLI & API**: Exposes a FastAPI backend for frontend integration, along with a rich terminal-based CLI for direct interactions and server management.
-
-## Project Structure
-
-The repository follows standard Python modular architecture:
-
-```
-SHL_assessment/
-├── app/                  # Main application code
-│   ├── main.py           # FastAPI application & API endpoints
-│   ├── llms.py           # LLM interactions and embedding functions
-│   ├── models.py         # Pydantic data models
-│   └── cli.py            # Command Line Interface (chat, serve, ingest)
-├── data/                 # Data files and generated indices
-│   ├── catalog.json             # Normalized JSON catalog
-│   ├── shl_product_catalog.json # Raw scraped JSON catalog
-│   ├── bm25_indices.pkl         # Local BM25 indices (fallback)
-│   └── pdf.txt                  # Extracted raw text
-├── scripts/              # Helper scripts for data ingestion and DB setup
-│   ├── ingestion.py      # Cleans catalog, generates embeddings, upserts to Supabase
-│   ├── extract_docs.py   # Extracts data from PDF docs
-│   └── supabase_setup.sql# Database schema and setup for pgvector/FTS
-├── eval/                 # Testing and evaluation scripts
-│   ├── evaluate.py              # Batch evaluation script
-│   ├── run_sample.py            # Runs sample test conversations
-│   └── sample_conversations/    # Sample test data
-├── docs/                 # Project documentation and specifications
-└── .env                  # Environment variables
-```
 
 ## Setup Instructions
 
@@ -48,6 +19,7 @@ SHL_assessment/
 - Groq API Key (for high-speed response synthesis)
 
 Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -67,18 +39,13 @@ API_URL="http://localhost:8000"
 ### 3. Database Setup (Supabase)
 
 You must configure your Supabase instance to support pgvector and full-text search:
+
 1. Open the SQL Editor in your Supabase dashboard.
 2. Copy and execute the contents of `scripts/supabase_setup.sql`.
 
 ### 4. Data Ingestion
 
-Run the ingestion script to process the raw catalog, generate `gemini-embedding-2` vectors, build local fallback BM25 indices, and upsert everything to Supabase:
-
-```bash
-python app/cli.py ingest
-# or run directly:
-# python scripts/ingestion.py
-```
+Run the ingestion script to process the raw catalog, generate vectors embeddings, build local fallback BM25 indices, and upsert everything to Supabase:
 
 ## Running the Application
 
@@ -87,19 +54,10 @@ python app/cli.py ingest
 To start the API server locally:
 
 ```bash
-python app/cli.py serve
-# or run directly:
-# python -m uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload
 ```
+
 The server will be available at `http://localhost:8000`.
-
-### Interactive CLI Chat
-
-You can test the conversational agent directly in your terminal using the built-in CLI:
-
-```bash
-python app/cli.py chat
-```
 
 ## Architecture
 
