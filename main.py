@@ -27,6 +27,61 @@ bm25_indices = {}
 pinecone_index = None
 embedding_model = None
 
+# --- CANONICAL PRODUCT MAPPINGS ---
+# These fix the slug aliasing problem (e.g., verify-g vs shl-verify-interactive-g)
+CANONICAL_PRODUCTS = {
+    "personality": "occupational-personality-questionnaire-opq32r",
+    "cognitive": "shl-verify-interactive-g",
+    "graduate_sjt": "graduate-scenarios",
+    "management_sjt": "management-scenarios",
+    "safety": "dependability-and-safety-instrument-dsi",
+    "safety_focus": "safety-and-dependability-focus-8-0",
+    "gsa": "global-skills-assessment",
+    "gsa_dev": "global-skills-development-report",
+    "opq_leadership": "opq-leadership-report",
+    "opq_ucf": "opq-universal-competency-report-2-0",
+    "opq_sales": "opq-mq-sales-report",
+    "sales_transform": "salestransformationreport2-0-individualcontributor",
+}
+
+# Maps user-mentioned skills/technologies to exact catalog slugs
+SKILL_TO_SLUG = {
+    "java": "core-java-advanced-level-new",
+    "core java": "core-java-advanced-level-new",
+    "spring": "spring-new",
+    "sql": "sql-new",
+    "aws": "amazon-web-services-aws-development-new",
+    "amazon web services": "amazon-web-services-aws-development-new",
+    "docker": "docker-new",
+    "rest": "restful-web-services-new",
+    "restful": "restful-web-services-new",
+    "angular": "angular-6-new",
+    "excel": "microsoft-excel-365-new",
+    "ms excel": "microsoft-excel-365-new",
+    "word": "microsoft-word-365-new",
+    "ms word": "microsoft-word-365-new",
+    "hipaa": "hipaa-security",
+    "python": "python-new",
+    ".net": "dot-net-framework-4-5",
+    "c#": "csharp-new",
+    "javascript": "javascript-new",
+    "react": "react-new",
+    "linux": "linux-programming-general",
+    "networking": "networking-and-implementation-new",
+    "financial accounting": "financial-accounting-new",
+    "accounting": "financial-accounting-new",
+    "statistics": "basic-statistics-new",
+    "medical terminology": "medical-terminology-new",
+    "salesforce": "salesforce-development-new",
+    "sap": "sap-sd-sales-and-distribution-new",
+    "html": "html-css-new",
+    "css": "html-css-new",
+    "php": "php-new",
+    "ruby": "ruby-on-rails-new",
+    "data science": "data-science-new",
+    "machine learning": "machine-learning-new",
+}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global catalog_dict, bm25_indices, pinecone_index, embedding_model
@@ -196,11 +251,18 @@ Current State: {json.dumps(current_state)}
 Extract these fields:
 - role: The job role being hired for (e.g., "Java developer", "contact centre agent", "financial analyst")
 - seniority: Level (e.g., "senior", "entry-level", "mid-level", "graduate")  
-- skills: Specific skills, technologies, or competencies mentioned (e.g., ["Java", "Spring", "SQL", "stakeholder management"])
+- skills: Specific skills, technologies, or competencies mentioned. Extract EVERY named technology, tool, or skill (e.g., ["Java", "Spring", "SQL", "AWS", "Docker", "REST", "Angular", "Excel", "Word", "HIPAA"])
 - labels: Assessment types or categories requested (e.g., ["cognitive", "personality", "SJT", "knowledge", "simulation"])
 - language: Required language for assessments
 - duration_max: Maximum duration in minutes if mentioned
 - remote_required: Whether remote/online is required
+
+IMPORTANT for skills extraction:
+- Extract ALL specific technologies, tools, frameworks, and compliance terms mentioned
+- "full-stack Java/Spring/SQL" → ["Java", "Spring", "SQL"]
+- "Add AWS and Docker. Drop REST" → add AWS, Docker; note REST removal
+- "HIPAA compliance, patient records, Spanish" → ["HIPAA", "patient records", "Spanish"]
+- "Excel and Word" → ["Excel", "Word"]
 
 If the user explicitly says they don't care about a field, add it to explicit_nulls_to_add.
 """
@@ -326,9 +388,53 @@ def node_e_retriever(state: GraphState):
         if len(overlap) >= 2:
             all_results[slug] = all_results.get(slug, 0) + 0.05 * len(overlap)
             
-    top_slugs = sorted(all_results.keys(), key=lambda k: all_results[k], reverse=True)[:15]
+    top_slugs = sorted(all_results.keys(), key=lambda k: all_results[k], reverse=True)[:12]
+    
+    # --- FORCE-INJECT CANONICAL PRODUCTS ---
+    injected = set()
+    
+    # Always inject OPQ32r for any role-based query
+    if c_state.get("role") or c_state.get("skills"):
+        injected.add(CANONICAL_PRODUCTS["personality"])
+        injected.add(CANONICAL_PRODUCTS["cognitive"])
+    
+    # Seniority-based injections
+    seniority = (c_state.get("seniority") or "").lower()
+    if seniority in ["graduate", "entry-level", "entry level"]:
+        injected.add(CANONICAL_PRODUCTS["graduate_sjt"])
+    if seniority in ["senior", "executive", "director", "cxo"]:
+        injected.add(CANONICAL_PRODUCTS["opq_leadership"])
+    
+    # Purpose-based injections
+    all_user_lower = all_user_text.lower()
+    if any(kw in all_user_lower for kw in ["re-skill", "reskill", "development", "talent audit", "restructuring"]):
+        injected.add(CANONICAL_PRODUCTS["gsa"])
+        injected.add(CANONICAL_PRODUCTS["gsa_dev"])
+    
+    # Domain-based injections
+    if any(kw in all_user_lower for kw in ["safety", "plant", "manufacturing", "chemical", "hazard"]):
+        injected.add(CANONICAL_PRODUCTS["safety"])
+    if any(kw in all_user_lower for kw in ["sales", "selling", "account management"]):
+        injected.add(CANONICAL_PRODUCTS["opq_sales"])
+        injected.add(CANONICAL_PRODUCTS["sales_transform"])
+    if any(kw in all_user_lower for kw in ["leadership", "leader", "cxo", "director"]):
+        injected.add(CANONICAL_PRODUCTS["opq_leadership"])
+        injected.add(CANONICAL_PRODUCTS["opq_ucf"])
+    
+    # Skill-to-slug direct mapping
+    if c_state.get("skills"):
+        for skill in c_state["skills"]:
+            skill_key = skill.lower().strip()
+            if skill_key in SKILL_TO_SLUG:
+                injected.add(SKILL_TO_SLUG[skill_key])
+    
+    # Add injected slugs that aren't already in top results
+    for slug in injected:
+        if slug not in top_slugs and slug in catalog_dict:
+            top_slugs.append(slug)
+    
     final_results = [catalog_dict[slug] for slug in top_slugs if slug in catalog_dict]
-    print(f"Retrieved {len(final_results)} results.")
+    print(f"Retrieved {len(final_results)} results (injected {len(injected)} canonical).")
     
     return {"retrieval_results": final_results}
 
@@ -351,23 +457,94 @@ def node_f_synthesizer(state: GraphState):
         
         retrieval_block += f"{i}. {name} | slug={slug} | {keys} | {dur_str}\n"
     
-    prompt = f"""You are an SHL Assessment Recommender. Recommend the best SHL assessment products.
+    # Determine what info is missing for smarter VAGUE questions
+    missing_dims = []
+    if not c_state.get("role"): missing_dims.append("role")
+    if not c_state.get("seniority"): missing_dims.append("seniority")
+    if not c_state.get("skills"): missing_dims.append("skills")
+    
+    # Check if purpose (hiring vs development) is clear
+    all_msgs = " ".join([m["content"] for m in state["messages"] if m["role"] == "user"]).lower()
+    purpose_clear = any(kw in all_msgs for kw in ["hiring", "selection", "screening", "recruit", "development", "reskill", "re-skill", "audit", "training"])
+    if not purpose_clear: missing_dims.append("purpose")
+    
+    missing_info = ", ".join(missing_dims) if missing_dims else "none"
+    
+    prompt = f"""You are an expert SHL Assessment Recommender. Your job is to recommend the best SHL assessment products for a hiring or development scenario.
 
-SHL CATEGORIES: Knowledge/Skills(K), Personality(P: OPQ32r), Cognitive(A: Verify G+), Simulations(S), SJT(B: Graduate/Management Scenarios), Competencies(C: GSA)
-BATTERY RULES: Include knowledge tests + OPQ32r personality + Verify G+ cognitive when relevant. For graduates add Graduate Scenarios. For safety add DSI.
+## FEW-SHOT EXAMPLES (learn the correct battery patterns from these):
+
+EXAMPLE 1 — Tech Hiring (Senior Java Engineer):
+User: "I'm hiring a senior full-stack engineer. Core Java, Spring, SQL on the backend, Angular on the front. Backend-leaning."
+Correct Battery: Core Java Advanced + Spring + SQL + Angular 6 + OPQ32r + Verify G+ (6-7 items)
+Key: Map EACH named technology to its specific test. Always add OPQ32r + Verify G+.
+
+EXAMPLE 2 — Sales Re-skilling:
+User: "We need to re-skill our Sales organization as part of a talent audit."
+Correct Battery: Global Skills Assessment + Global Skills Development Report + OPQ32r + OPQ MQ Sales Report + Sales Transformation 2.0 (5 items)
+Key: Development/reskilling uses GSA + GSA Dev Report, NOT Verify G+. Sales roles get OPQ MQ Sales Report.
+
+EXAMPLE 3 — Senior Leadership Selection:
+User: "CXOs, director-level, 15+ years experience. Selection against leadership benchmark."
+Correct Battery: OPQ32r + OPQ Leadership Report + OPQ Universal Competency Report 2.0 (3 items)
+Key: Executive selection is personality-focused. No knowledge tests needed.
+
+EXAMPLE 4 — Safety-Critical Roles:
+User: "Plant operators at a chemical facility. Safety and reliability are paramount."
+Correct Battery: DSI + Safety & Dependability Focus + Workplace Health & Safety + domain knowledge test (4-7 items)
+Key: Safety roles ALWAYS get DSI.
+
+EXAMPLE 5 — Graduate Financial Analyst:
+User: "Graduate-level financial analysts. Need numerical reasoning, finance knowledge, and SJT."
+Correct Battery: Verify Numerical Reasoning + Financial Accounting + Basic Statistics + Graduate Scenarios + OPQ32r (5+ items)
+Key: Graduates get Graduate Scenarios. Map specific knowledge areas to specific tests.
+
+EXAMPLE 6 — Contact Centre Screening:
+User: "500 entry-level contact centre agents, inbound calls, English US."
+Correct Battery: Contact Center Call Simulation + Customer Service Phone Simulation + Entry Level Customer Service + SVAR Spoken English US (4-5 items)
+Key: High-volume screening uses Solutions and Simulations.
+
+EXAMPLE 7 — Healthcare Admin:
+User: "Healthcare admin staff, bilingual Spanish, HIPAA compliance, patient records, Word."
+Correct Battery: HIPAA Security + Medical Terminology + Microsoft Word 365 Essentials + OPQ32r + DSI (5 items)
+Key: Map EACH specific compliance/tool to its test. Healthcare gets DSI for patient safety.
+
+## RULES
+- When recommending, include ALL relevant items from the retrieval list — err on the side of MORE, not fewer
+- For hiring: ALWAYS include OPQ32r (personality) AND Verify G+ (cognitive) unless the role is executive-only
+- For development/reskilling: Include GSA + GSA Dev Report instead of Verify G+
+- Map EVERY named skill/technology to its specific knowledge test if available in the list
+- Use EXACT slug from the retrieval list to construct URL: https://www.shl.com/products/product-catalog/view/SLUG/
 
 HISTORY: {history}
 CONSTRAINTS: {json.dumps(c_state)}
+MISSING INFO: {missing_info}
 
-AVAILABLE ASSESSMENTS (use ONLY these, construct URL as https://www.shl.com/products/product-catalog/view/SLUG/):
+AVAILABLE ASSESSMENTS (use ONLY these, URL = https://www.shl.com/products/product-catalog/view/SLUG/):
 {retrieval_block}
 INTENT: {intent} | FORCE: {force_rec}
 
 Respond with JSON: {{"reply": str, "recommendations": [{{"name": exact_name, "url": "https://www.shl.com/products/product-catalog/view/SLUG/", "test_type": keys, "duration": dur, "rationale": why}}], "end_of_conversation": bool}}
 
-If VAGUE and not FORCE: ask 1 clarifying question, empty recommendations, end_of_conversation=false.
-If OUT_OF_SCOPE: decline, empty recommendations.
-If CONSTRAINED/REFINE/FORCE: return 3-10 assessments with mixed types, end_of_conversation=true. Always consider OPQ32r and Verify G+ if in the list.
+## DECISION LOGIC
+If VAGUE and not FORCE:
+  Ask ONE targeted clarifying question about the most important missing info ({missing_info}).
+  Use concrete examples from SHL's catalog to help the user decide, e.g.:
+  - Missing role: "What specific role are you hiring for? E.g., software engineer, financial analyst, sales rep, contact centre agent..."
+  - Missing seniority: "What seniority level? Graduate/entry-level gets Graduate Scenarios; senior gets advanced tests; executive gets leadership reports."
+  - Missing purpose: "Is this for hiring/selection, or for development/re-skilling? This changes which products I recommend."
+  - Missing skills: "What specific skills or technologies should we assess? E.g., Java, SQL, Excel, HIPAA..."
+  Return empty recommendations. Set end_of_conversation=false.
+
+If CONSTRAINED/REFINE/FORCE:
+  Build a COMPREHENSIVE battery of 3-10 assessments following the few-shot patterns above.
+  Include EVERY matching item from the retrieval list.
+  Set end_of_conversation=true.
+
+If COMPARE:
+  Compare the named assessments. Include them as recommendations too. Set end_of_conversation=false.
+
+If OUT_OF_SCOPE: decline. Empty recommendations.
 """
     
     messages = [{"role": "user", "content": prompt}]
