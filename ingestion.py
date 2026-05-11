@@ -3,10 +3,9 @@ import re
 import pickle
 import os
 from dateutil import parser
-from pinecone import Pinecone, ServerlessSpec
-from sentence_transformers import SentenceTransformer
-from rank_bm25 import BM25Okapi
+from supabase import create_client, Client
 from dotenv import load_dotenv
+from llms import embed_text
 
 load_dotenv()
 
@@ -96,70 +95,81 @@ def main():
         names.append(item.get('name', '').lower())
         slugs_list.append(slug)
 
-    print("Building BM25 indices...")
-    tokenized_chunks = [re.split(r"\W+", c) for c in chunks]
-    bm25_chunks = BM25Okapi(tokenized_chunks)
-    
-    tokenized_names = [re.split(r"\W+", n) for n in names]
-    bm25_names = BM25Okapi(tokenized_names)
-    
-    with open('bm25_indices.pkl', 'wb') as f:
-        pickle.dump({
-            "bm25_chunks": bm25_chunks,
-            "bm25_names": bm25_names,
-            "slugs": slugs_list
-        }, f)
+    print("Building BM25 indices (for local fallback)...")
+    try:
+        from rank_bm25 import BM25Okapi
+        tokenized_chunks = [re.split(r"\W+", c) for c in chunks]
+        bm25_chunks = BM25Okapi(tokenized_chunks)
+        
+        tokenized_names = [re.split(r"\W+", n) for n in names]
+        bm25_names = BM25Okapi(tokenized_names)
+        
+        with open('bm25_indices.pkl', 'wb') as f:
+            pickle.dump({
+                "bm25_chunks": bm25_chunks,
+                "bm25_names": bm25_names,
+                "slugs": slugs_list
+            }, f)
+    except ImportError:
+        print("rank_bm25 not installed, skipping local BM25 generation.")
         
     with open('catalog.json', 'w', encoding='utf-8') as f:
         json.dump(normalized_catalog, f, ensure_ascii=False, indent=2)
 
-    print("Generating Embeddings...")
-    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-    embeddings = model.encode(chunks, show_progress_bar=True)
+    print("Generating Embeddings (using Gemini API)...")
+    # Process in batches to avoid API limits
+    batch_size = 50
+    embeddings = []
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i:i+batch_size]
+        print(f"Embedding batch {i//batch_size + 1}/{(len(chunks)-1)//batch_size + 1}...")
+        embeddings.extend(embed_text(batch))
     
-    print("Upserting to Pinecone...")
-    pinecone_api_key = os.environ.get("PINECONE_API_KEY")
-    if not pinecone_api_key:
-        print("PINECONE_API_KEY not set. Skipping Pinecone upsert.")
+    print("Upserting to Supabase...")
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
+    
+    if not supabase_url or not supabase_key:
+        print("Supabase credentials not set. Skipping Supabase upsert.")
         return
 
-    pc = Pinecone(api_key=pinecone_api_key)
-    index_name = "shl-assessments"
+    supabase: Client = create_client(supabase_url, supabase_key)
     
-    if index_name not in pc.list_indexes().names():
-        pc.create_index(
-            name=index_name,
-            dimension=384, # all-MiniLM-L6-v2 dimension
-            metric='cosine',
-            spec=ServerlessSpec(cloud='aws', region='us-east-1')
-        )
-    
-    index = pc.Index(index_name)
-    
-    batch_size = 100
-    vectors = []
+    upsert_batch_size = 100
+    rows = []
     
     for i, slug in enumerate(slugs_list):
         metadata = normalized_catalog[slug].copy()
         
-        # pinecone metadata only supports string, number, boolean, or list of strings
-        # remove None values
-        if metadata['duration_minutes'] is None:
-            metadata['duration_minutes'] = -1 # default for missing to allow filtering, or just omit
-            del metadata['duration_minutes']
+        # Clean the chunk string so it can be safely cast to tsvector by Postgres
+        import re
+        safe_search_text = re.sub(r'[^a-z0-9\s]', ' ', chunks[i].lower())
+        safe_search_text = re.sub(r'\s+', ' ', safe_search_text).strip()
         
-        vectors.append({
-            "id": slug,
-            "values": embeddings[i].tolist(),
-            "metadata": metadata
-        })
+        row = {
+            "slug": slug,
+            "name": metadata.get("name", ""),
+            "description": metadata.get("description", ""),
+            "link": metadata.get("link", ""),
+            "duration_minutes": metadata.get("duration_minutes"),
+            "remote": metadata.get("remote", False),
+            "adaptive": metadata.get("adaptive", False),
+            "test_type_codes": metadata.get("test_type_codes", []),
+            "job_level_codes": metadata.get("job_level_codes", []),
+            "languages": metadata.get("languages", []),
+            "keys": metadata.get("keys", []),
+            "entity_id": metadata.get("entity_id", ""),
+            "embedding": embeddings[i],
+            "search_text": safe_search_text
+        }
+        rows.append(row)
         
-        if len(vectors) >= batch_size:
-            index.upsert(vectors=vectors)
-            vectors = []
+        if len(rows) >= upsert_batch_size:
+            supabase.table("assessments").upsert(rows).execute()
+            rows = []
             
-    if vectors:
-        index.upsert(vectors=vectors)
+    if rows:
+        supabase.table("assessments").upsert(rows).execute()
         
     print("Ingestion complete!")
 

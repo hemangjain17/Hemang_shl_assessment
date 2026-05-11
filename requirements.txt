@@ -2,9 +2,7 @@ fastapi
 uvicorn[standard]
 pydantic
 langgraph
-pinecone
-sentence-transformers
-rank_bm25
+supabase
 groq
 google-genai
 python-dotenv

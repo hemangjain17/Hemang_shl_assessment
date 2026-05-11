@@ -66,3 +66,26 @@ def call_synthesizer(messages: list) -> str:
         print(f"Groq failed: {e}. Falling back to Gemini 2.5 Pro.")
         model_name = "gemini-2.5-pro"
         return call_gemini(model_name, messages)
+
+def embed_text(texts: list[str]) -> list[list[float]]:
+    if not gemini_client:
+        raise ValueError("GEMINI_API_KEY is not set.")
+        
+    embeddings = []
+    import time
+    for text in texts:
+        result = gemini_client.models.embed_content(
+            model='gemini-embedding-2',
+            contents=text,
+            config={'output_dimensionality': 768}
+        )
+        
+        if isinstance(result.embeddings, list):
+             embeddings.append(result.embeddings[0].values)
+        else:
+             embeddings.append(result.embeddings.values)
+             
+        # Add a small delay to avoid rate limits
+        time.sleep(0.05)
+        
+    return embeddings

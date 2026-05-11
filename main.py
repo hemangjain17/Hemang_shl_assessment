@@ -12,20 +12,15 @@ from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
 from typing import TypedDict, List, Dict, Any
 
-from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
-from rank_bm25 import BM25Okapi
-
 from langgraph.graph import StateGraph, END
-
+from supabase import create_client, Client
 from models import ChatRequest, ChatResponse, ConstraintState, Message, ExtractorResponse, RoleExpansion
-from llms import call_gemini, call_synthesizer
+from llms import call_gemini, call_synthesizer, embed_text
 
 # Global state
 catalog_dict = {}
 bm25_indices = {}
-pinecone_index = None
-embedding_model = None
+supabase_client: Client = None
 
 # --- CANONICAL PRODUCT MAPPINGS ---
 # These fix the slug aliasing problem (e.g., verify-g vs shl-verify-interactive-g)
@@ -84,26 +79,26 @@ SKILL_TO_SLUG = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global catalog_dict, bm25_indices, pinecone_index, embedding_model
+    global catalog_dict, bm25_indices, supabase_client
     
     # Load catalog
     if os.path.exists("catalog.json"):
         with open("catalog.json", "r", encoding="utf-8") as f:
             catalog_dict = json.load(f)
             
-    # Load BM25
+    # Load BM25 (fallback)
     if os.path.exists("bm25_indices.pkl"):
-        with open("bm25_indices.pkl", "rb") as f:
-            bm25_indices = pickle.load(f)
+        try:
+            with open("bm25_indices.pkl", "rb") as f:
+                bm25_indices = pickle.load(f)
+        except Exception:
+            pass
             
-    # Load embedding model
-    embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-    
-    # Connect Pinecone
-    pc_key = os.environ.get("PINECONE_API_KEY")
-    if pc_key:
-        pc = Pinecone(api_key=pc_key)
-        pinecone_index = pc.Index("shl-assessments")
+    # Connect Supabase
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
+    if supabase_url and supabase_key:
+        supabase_client = create_client(supabase_url, supabase_key)
         
     yield
 
@@ -336,24 +331,33 @@ def node_e_retriever(state: GraphState):
     all_results = {}
     
     for query_str in queries:
-        # Dense retrieval
         dense_results = []
-        if pinecone_index and embedding_model:
-            emb = embedding_model.encode([query_str])[0].tolist()
-            filter_dict = {}
-            if c_state.get("duration_max"): filter_dict["duration_minutes"] = {"$lte": c_state["duration_max"]}
-            if c_state.get("remote_required"): filter_dict["remote"] = True
-            
-            query_kwargs = {"vector": emb, "top_k": 25, "include_metadata": True}
-            if filter_dict: query_kwargs["filter"] = filter_dict
-            
-            res = pinecone_index.query(**query_kwargs)
-            for m in res.matches:
-                dense_results.append(m.id)
-                
-        # BM25 retrieval
         bm25_results = []
-        if "bm25_chunks" in bm25_indices:
+        
+        # Try Supabase first
+        if supabase_client:
+            try:
+                # 1. Dense retrieval via pgvector
+                emb = embed_text([query_str])[0]
+                rpc_args = {"query_embedding": emb, "match_count": 25}
+                if c_state.get("duration_max"):
+                    rpc_args["filter_duration"] = c_state["duration_max"]
+                if c_state.get("remote_required"):
+                    rpc_args["filter_remote"] = True
+                    
+                res = supabase_client.rpc("match_assessments", rpc_args).execute()
+                for item in res.data:
+                    dense_results.append(item["slug"])
+                
+                # 2. Sparse retrieval via pg_trgm/FTS
+                res_fts = supabase_client.rpc("search_assessments_fts", {"query_text": query_str, "match_count": 25}).execute()
+                for item in res_fts.data:
+                    bm25_results.append(item["slug"])
+            except Exception as e:
+                print(f"Supabase search error: {e}")
+        
+        # Local BM25 fallback if FTS failed/missing
+        if not bm25_results and "bm25_chunks" in bm25_indices:
             q_tokens = re.split(r"\W+", query_str.lower())
             scores = bm25_indices["bm25_chunks"].get_scores(q_tokens)
             top_k = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:25]
